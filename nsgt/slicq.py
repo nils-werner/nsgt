@@ -24,9 +24,11 @@ from fscale import OctScale
 
 # one of the more expensive functions (32/400)
 def arrange(cseq,M,fwd):
-    c0 = cseq.next()  # grab first stream element
-    cseq = chain((c0,),cseq)  # push it back in 
-    assert len(c0) == 1
+    try:
+        c0 = cseq.next()  # grab first stream element
+    except StopIteration:
+        return iter(())
+    cseq = chain((c0,),cseq)  # push it back in
     M = map(len,c0[0])  # read off M from the coefficients
     ixs = (
            [(slice(3*mkk//4,mkk),slice(0,3*mkk//4)) for mkk in M],  # odd
@@ -43,7 +45,7 @@ def starzip(iterables):
     def inner(itr, i):
         for t in itr:
             yield t[i]
-    iterables = iter(iterables) 
+    iterables = iter(iterables)
     it = iterables.next()  # we need that to determine the length of one element
     iterables = chain((it,),iterables)
     return [inner(itr,i) for i,itr in enumerate(tee(iterables,len(it)))]
@@ -54,7 +56,7 @@ def chnmap(gen,seq):
     return izip(*gens)  # packing channels to one generator yielding channel tuples
 
 class NSGT_sliced:
-    def __init__(self,scale,sl_len,tr_area,fs,min_win=16,Qvar=1,real=False,recwnd=False,matrixform=False,reducedform=0,multichannel=False,measurefft=False):
+    def __init__(self,scale,sl_len,tr_area,fs,min_win=16,Qvar=1,real=False,recwnd=False,matrixform=False,reducedform=0,multichannel=False,measurefft=False,multithreading=False,dtype=float):
         assert fs > 0
         assert sl_len > 0
         assert tr_area >= 0
@@ -69,13 +71,14 @@ class NSGT_sliced:
         self.fs = fs
         self.real = real
         self.measurefft = measurefft
+        self.multithreading = multithreading
         self.userecwnd = recwnd
         self.reducedform = reducedform
 
         self.scale = scale
         self.frqs,self.q = self.scale()
 
-        self.g,self.rfbas,self.M = nsgfwin(self.frqs,self.q,self.fs,self.sl_len,sliced=True,min_win=min_win,Qvar=Qvar)
+        self.g,self.rfbas,self.M = nsgfwin(self.frqs,self.q,self.fs,self.sl_len,sliced=True,min_win=min_win,Qvar=Qvar,dtype=dtype)
         
 #        print "rfbas",self.rfbas/float(self.sl_len)*self.fs
         
@@ -97,8 +100,8 @@ class NSGT_sliced:
         
         self.gd = nsdual(self.g,self.wins,self.nn,self.M)
         
-        self.fwd = lambda fc: nsgtf_sl(fc,self.g,self.wins,self.nn,self.M,real=self.real,reducedform=self.reducedform,measurefft=self.measurefft)
-        self.bwd = lambda cc: nsigtf_sl(cc,self.gd,self.wins,self.nn,self.sl_len,real=self.real,reducedform=self.reducedform,measurefft=self.measurefft)
+        self.fwd = lambda fc: nsgtf_sl(fc,self.g,self.wins,self.nn,self.M,real=self.real,reducedform=self.reducedform,measurefft=self.measurefft,multithreading=self.multithreading)
+        self.bwd = lambda cc: nsigtf_sl(cc,self.gd,self.wins,self.nn,self.sl_len,real=self.real,reducedform=self.reducedform,measurefft=self.measurefft,multithreading=self.multithreading)
 
 
     def forward(self,sig):
@@ -140,7 +143,7 @@ class NSGT_sliced:
 
 
 class CQ_NSGT_sliced(NSGT_sliced):
-    def __init__(self,fmin,fmax,bins,sl_len,tr_area,fs,min_win=16,Qvar=1,real=False,recwnd=False,matrixform=False,reducedform=0,multichannel=False,measurefft=False):
+    def __init__(self,fmin,fmax,bins,sl_len,tr_area,fs,min_win=16,Qvar=1,real=False,recwnd=False,matrixform=False,reducedform=0,multichannel=False,measurefft=False,multithreading=False):
         assert fmin > 0
         assert fmax > fmin
         assert bins > 0
@@ -150,7 +153,7 @@ class CQ_NSGT_sliced(NSGT_sliced):
         self.bins = bins  # bins per octave
 
         scale = OctScale(fmin,fmax,bins)
-        NSGT_sliced.__init__(self,scale,sl_len,tr_area,fs,min_win,Qvar,real,recwnd,matrixform,reducedform,multichannel,measurefft)
+        NSGT_sliced.__init__(self,scale,sl_len,tr_area,fs,min_win,Qvar,real,recwnd,matrixform=matrixform,reducedform=reducedform,multichannel=multichannel,measurefft=measurefft,multithreading=multithreading)
 
 import unittest
 norm = lambda x: N.sqrt(N.mean(N.abs(N.square(x))))

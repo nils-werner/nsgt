@@ -51,19 +51,37 @@ Edited by Nicki Holighaus 01.03.11
 
 import numpy as N
 from itertools import izip,chain,imap
-from util import fftp,ifftp,irfftp
+from fft import fftp,ifftp,irfftp
 
 try:
-    import theano as T
+    # try to import cython version
+    from _nsigtf_loop import nsigtf_loop
 except ImportError:
-    T = None
+    nsigtf_loop = None
+
+if nsigtf_loop is None:
+    from nsigtf_loop import nsigtf_loop
+
+if False:
+    # what about theano?
+    try:
+        import theano as T
+    except ImportError:
+        T = None
+    
+try:
+    import multiprocessing as MP
+except ImportError:
+    MP = None
+    
 
 #@profile
-def nsigtf_sl(cseq,gd,wins,nn,Ls=None,real=False,reducedform=0,measurefft=False):
+def nsigtf_sl(cseq,gd,wins,nn,Ls=None,real=False,reducedform=0,measurefft=False,multithreading=False):
     cseq = iter(cseq)
+    dtype = gd[0].dtype
 
-    fft = fftp(measure=measurefft)
-    ifft = irfftp(measure=measurefft) if real else ifftp(measure=measurefft)
+    fft = fftp(measure=measurefft,dtype=dtype)
+    ifft = irfftp(measure=measurefft,dtype=dtype) if real else ifftp(measure=measurefft,dtype=dtype)
     
     if real:
         ln = len(gd)//2+1-reducedform*2
@@ -85,9 +103,14 @@ def nsigtf_sl(cseq,gd,wins,nn,Ls=None,real=False,reducedform=0,measurefft=False)
     # get first slice
     c0 = cseq.next()
 
-    fr = N.empty(nn,dtype=c0[0].dtype)  # Initialize output
+    fr = N.empty(nn,dtype=c0[0].dtype)  # Allocate output
     temp0 = N.empty(maxLg,dtype=fr.dtype)  # pre-allocation
     
+    if multithreading and MP is not None:
+        mmap = MP.Pool().map
+    else:
+        mmap = map
+
     loopparams = []
     for gdii,win_range in izip(sl(gd),sl(wins)):
         Lg = len(gdii)
@@ -99,39 +122,19 @@ def nsigtf_sl(cseq,gd,wins,nn,Ls=None,real=False,reducedform=0,measurefft=False)
         sl2 = slice(-(Lg//2),None)
         p = (gdii,wr1,wr2,sl1,sl2,temp)
         loopparams.append(p)
-
-    if True or T is None:
-        def loop(fr,fc):
-            # The overlap-add procedure including multiplication with the synthesis windows
-            # TODO: stuff loop into theano
-            for t,(gdii,wr1,wr2,sl1,sl2,temp) in izip(symm(fc),loopparams):
-                t1 = temp[sl1]
-                t2 = temp[sl2]
-                t1[:] = t[sl1]
-                t2[:] = t[sl2]
-                temp *= gdii
-                temp *= len(t)
-    
-                fr[wr1] += t2
-                fr[wr2] += t1
-    
-    #            wr1a,wr1b = wr1
-    #            fr[wr1a] += t2[:wr1a.stop-wr1a.start]
-    #            fr[wr1b] += t2[wr1a.stop-wr1a.start:]
-    #            wr2a,wr2b = wr2
-    #            fr[wr2a] += t1[:wr2a.stop-wr2a.start]
-    #            fr[wr2b] += t1[wr2a.stop-wr2a.start:]
-    else:
-        raise RuntimeError("Theano support not implemented yet")
-
+        
+    # main loop over slices
     for c in chain((c0,),cseq):
         assert len(c) == ln
 
-        fr[:] = 0.
-        fc = map(fft,c)  # do transforms on coefficients - TODO: for matrixform we could do a FFT on the whole matrix along one axis
+        # do transforms on coefficients
+        # TODO: for matrixform we could do a FFT on the whole matrix along one axis
+        # this could also be nicely parallalized
+        fc = mmap(fft,c)
+        fc = symm(fc)
         
         # The overlap-add procedure including multiplication with the synthesis windows
-        loop(fr,fc)
+        fr = nsigtf_loop(loopparams,fr,fc)
 
         ftr = fr[:nn//2+1] if real else fr
 
@@ -142,5 +145,5 @@ def nsigtf_sl(cseq,gd,wins,nn,Ls=None,real=False,reducedform=0,measurefft=False)
         yield sig
 
 # non-sliced version
-def nsigtf(c,gd,wins,nn,Ls=None,real=False,reducedform=0,measurefft=False):
-    return nsigtf_sl((c,),gd,wins,nn,Ls=Ls,real=real,reducedform=reducedform,measurefft=measurefft).next()
+def nsigtf(c,gd,wins,nn,Ls=None,real=False,reducedform=0,measurefft=False,multithreading=False):
+    return nsigtf_sl((c,),gd,wins,nn,Ls=Ls,real=real,reducedform=reducedform,measurefft=measurefft,multithreading=multithreading).next()
